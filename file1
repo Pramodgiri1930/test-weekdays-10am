@@ -1,0 +1,106 @@
+import boto3
+import botocore
+import sys
+
+# Configuration - replace placeholders before running
+CFG = {
+    "DBInstanceIdentifier": "mydbinstance",
+    "MasterUsername": "dbadmin",
+    "MasterUserPassword": "ChangeMe123!",  # replace with a strong password
+    "DBInstanceClass": "db.t3.micro",
+    "Engine": "mysql",  # e.g. mysql, postgres, mariadb
+    "AllocatedStorage": 20,  # GB
+    "PubliclyAccessible": True,
+    "MultiAZ": False,
+    "BackupRetentionPeriod": 7,
+    "StorageType": "gp2",
+    # Optional (uncomment and set if needed):
+    # "DBSubnetGroupName": "my-subnet-group",
+    # "VpcSecurityGroupIds": ["sg-0123456789abcdef0"],
+    # "Port": 3306,
+    # "Tags": [{"Key": "Name", "Value": "mydb"}],
+}
+
+rds = boto3.client("rds")
+
+
+def instance_exists(identifier):
+    try:
+        rds.describe_db_instances(DBInstanceIdentifier=identifier)
+        return True
+    except botocore.exceptions.ClientError as e:
+        err = e.response.get("Error", {})
+        if err.get("Code") in ("DBInstanceNotFound", "InvalidDBInstanceState", "DBInstanceNotFoundFault"):
+            return False
+        raise
+
+
+def create_instance(cfg):
+    params = {
+        "DBInstanceIdentifier": cfg["DBInstanceIdentifier"],
+        "AllocatedStorage": cfg["AllocatedStorage"],
+        "DBInstanceClass": cfg["DBInstanceClass"],
+        "Engine": cfg["Engine"],
+        "MasterUsername": cfg["MasterUsername"],
+        "MasterUserPassword": cfg["MasterUserPassword"],
+        "PubliclyAccessible": cfg.get("PubliclyAccessible", False),
+        "MultiAZ": cfg.get("MultiAZ", False),
+        "BackupRetentionPeriod": cfg.get("BackupRetentionPeriod", 7),
+        "StorageType": cfg.get("StorageType", "gp2"),
+    }
+    # Optional params
+    optional = ["DBSubnetGroupName", "VpcSecurityGroupIds", "Port", "Tags"]
+    for key in optional:
+        if key in cfg:
+            params[key] = cfg[key]
+
+    print("Creating RDS instance:", cfg["DBInstanceIdentifier"])
+    return rds.create_db_instance(**params)
+
+
+def wait_for_available(identifier, timeout_minutes=30):
+    waiter = rds.get_waiter("db_instance_available")
+    try:
+        waiter.wait(DBInstanceIdentifier=identifier,
+                    WaiterConfig={"Delay": 30, "MaxAttempts": int(timeout_minutes * 2)})
+        return True
+    except botocore.exceptions.WaiterError as e:
+        print("Waiter error:", e)
+        return False
+
+
+def print_endpoint(identifier):
+    resp = rds.describe_db_instances(DBInstanceIdentifier=identifier)
+    inst = resp["DBInstances"][0]
+    endpoint = inst.get("Endpoint")
+    if endpoint:
+        print("Endpoint address:", endpoint.get("Address"))
+        print("Port:", endpoint.get("Port"))
+    else:
+        print("Endpoint is not available yet.")
+
+
+def main():
+    ident = CFG["DBInstanceIdentifier"]
+    try:
+        if instance_exists(ident):
+            print(f"DB instance '{ident}' already exists.")
+            print_endpoint(ident)
+            return
+        create_instance(CFG)
+        print("Waiting for instance to become available (this may take several minutes)...")
+        if wait_for_available(ident):
+            print("Instance is available.")
+            print_endpoint(ident)
+        else:
+            print("Instance did not become available within the timeout.")
+    except botocore.exceptions.ClientError as e:
+        print("AWS ClientError:", e.response.get("Error", {}).get("Message"))
+        sys.exit(1)
+    except Exception as e:
+        print("Error:", str(e))
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
