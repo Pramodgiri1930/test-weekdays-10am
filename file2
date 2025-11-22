@@ -1,0 +1,141 @@
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+variable "aws_region" {
+  type    = string
+  default = "us-east-1"
+}
+
+variable "db_identifier" {
+  type    = string
+  default = "mydbinstance"
+}
+
+variable "db_name" {
+  type    = string
+  default = "mydatabase"
+}
+
+variable "username" {
+  type    = string
+  default = "dbadmin"
+}
+
+variable "password" {
+  type        = string
+  description = "RDS master password (sensitive). Provide via terraform.tfvars or CLI."
+  sensitive   = true
+}
+
+variable "instance_class" {
+  type    = string
+  default = "db.t3.micro"
+}
+
+variable "engine" {
+  type    = string
+  default = "mysql"
+}
+
+variable "engine_version" {
+  type    = string
+  default = "" # leave empty to use AWS default
+}
+
+variable "allocated_storage" {
+  type    = number
+  default = 20
+}
+
+variable "storage_type" {
+  type    = string
+  default = "gp2"
+}
+
+variable "publicly_accessible" {
+  type    = bool
+  default = true
+}
+
+variable "backup_retention_period" {
+  type    = number
+  default = 7
+}
+
+variable "db_subnet_ids" {
+  type        = list(string)
+  description = "List of subnet IDs for the DB subnet group (required for RDS in a VPC)"
+  default     = []
+}
+
+variable "vpc_security_group_ids" {
+  type        = list(string)
+  description = "Security group IDs to attach to the RDS instance (optional)"
+  default     = []
+}
+
+variable "skip_final_snapshot" {
+  type    = bool
+  default = true
+}
+
+variable "tags" {
+  type    = map(string)
+  default = {
+    "Name" = "terraform-rds"
+  }
+}
+
+# Create a DB subnet group if subnet ids are provided
+resource "aws_db_subnet_group" "rds_subnet" {
+  count       = length(var.db_subnet_ids) > 0 ? 1 : 0
+  name        = "${var.db_identifier}-subnet-group"
+  subnet_ids  = var.db_subnet_ids
+  description = "DB subnet group for ${var.db_identifier}"
+  tags        = var.tags
+}
+
+resource "aws_db_instance" "rds" {
+  identifier             = var.db_identifier
+  allocated_storage      = var.allocated_storage
+  engine                 = var.engine
+  engine_version         = length(trimspace(var.engine_version)) > 0 ? var.engine_version : null
+  instance_class         = var.instance_class
+  name                   = var.db_name
+  username               = var.username
+  password               = var.password
+  storage_type           = var.storage_type
+  publicly_accessible    = var.publicly_accessible
+  backup_retention_period= var.backup_retention_period
+  skip_final_snapshot    = var.skip_final_snapshot
+  vpc_security_group_ids = length(var.vpc_security_group_ids) > 0 ? var.vpc_security_group_ids : null
+
+  # Attach subnet group only if created
+  db_subnet_group_name = length(aws_db_subnet_group.rds_subnet) > 0 ? aws_db_subnet_group.rds_subnet[0].name : null
+
+  tags = var.tags
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+output "rds_endpoint" {
+  value       = aws_db_instance.rds.endpoint
+  description = "RDS endpoint address"
+}
+
+output "rds_port" {
+  value       = aws_db_instance.rds.port
+  description = "RDS port"
+}
